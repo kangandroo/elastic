@@ -1,0 +1,254 @@
+// V0 = 100; init 10 hole
+
+ofstream compli("wheel.obj") ;
+ofstream grad("wheel.grad") ;
+string save="wheel";
+
+int niter=2000;			// Number of iterations
+real errelas=0.05;		// Threshold or error level for mesh adaptation 
+real pasinit=2.;	        // Initial descent step
+real pasef;			// Effective descent step
+real muv;			// Lagrange multiplier associated to the volume constraint
+real pasmu=2;                   // Refreshing step for the Lagrange multiplier
+int nsaved=0;			// Initialization of the backup index
+real compliance;		// Compliance
+real volume0;			// Initial volume 
+real volume;			// Volume of the deformed shape
+string caption;			// Caption for the graphics
+real norm;			// Gradient norm
+real product;			// Scalar product between the current gradient and the previous one 
+bool back=false;		// Control parameter in case of stepping back 
+real E=20000;			// Young modulus
+real nu=0.34;			// Poisson coefficient (between -1 et 1/2)
+//real pi=4*atan(1) ;
+
+// Applied forces 
+real fg = 50;
+func gx=fg*y;  		// Lực theo phương x	
+func gy=-fg*x;			// Lực theo phương y
+
+// Hệ số Lame
+real lambda=E*nu/((1.+nu)*(1.-2.*nu));
+real mu=E/(2.*(1.+nu));
+
+// Xác định vùng sẽ tối ưu (=1 cần tối ưu, =0 không tối ưu)
+func cut = ((x*x+y*y)>1.5*1.5 && (x*x+y*y)<9.5*9.5);
+int dirichlet=1;	// Biên cố định
+int free=2;			// Biên sẽ được tối ưu
+int neumann=3; 		// Biên tác dụng lực
+
+// Xây dựng lưới
+int n = 10;
+mesh Sh;
+
+// Bánh xe
+real r = 0.2;
+real nh = 10;
+real rd1 = 5.5;
+real rd2 = 4.5;
+
+border c1(t=0,2*pi){x=10*cos(t);y=10*sin(t);label=dirichlet;}
+border c2(t=0,2*pi){x=cos(t);y=sin(t);label = neumann;}
+border h1(t=0,2*pi){x=rd1*cos(1*2*pi/nh)+r*cos(t);y=rd1*sin(1*2*pi/nh)+r*sin(t);label = free;}
+border h2(t=0,2*pi){x=rd2*cos(2*2*pi/nh)+r*cos(t);y=rd2*sin(2*2*pi/nh)+r*sin(t);label = free;}
+border h3(t=0,2*pi){x=rd1*cos(3*2*pi/nh)+r*cos(t);y=rd1*sin(3*2*pi/nh)+r*sin(t);label = free;}
+border h4(t=0,2*pi){x=rd2*cos(4*2*pi/nh)+r*cos(t);y=rd2*sin(4*2*pi/nh)+r*sin(t);label = free;}
+border h5(t=0,2*pi){x=rd1*cos(5*2*pi/nh)+r*cos(t);y=rd1*sin(5*2*pi/nh)+r*sin(t);label = free;}
+border h6(t=0,2*pi){x=rd2*cos(6*2*pi/nh)+r*cos(t);y=rd2*sin(6*2*pi/nh)+r*sin(t);label = free;}
+border h7(t=0,2*pi){x=rd1*cos(7*2*pi/nh)+r*cos(t);y=rd1*sin(7*2*pi/nh)+r*sin(t);label = free;}
+border h8(t=0,2*pi){x=rd2*cos(8*2*pi/nh)+r*cos(t);y=rd2*sin(8*2*pi/nh)+r*sin(t);label = free;}
+border h9(t=0,2*pi){x=rd1*cos(9*2*pi/nh)+r*cos(t);y=rd1*sin(9*2*pi/nh)+r*sin(t);label = free;}
+border h10(t=0,2*pi){x=rd2*cos(10*2*pi/nh)+r*cos(t);y=rd2*sin(10*2*pi/nh)+r*sin(t);label = free;}
+
+int mul = 5;
+int hole = 2;
+Sh = buildmesh(
+c1(80*mul)
++c2(-5*mul)
++h1(-hole*mul)
++h2(-hole*mul)
++h3(-hole*mul)
++h4(-hole*mul)
++h5(-hole*mul)
++h6(-hole*mul)
++h7(-hole*mul)
++h8(-hole*mul)
++h9(-hole*mul)
++h10(-hole*mul)
+);
+plot(Sh);
+
+mesh Th=Sh;
+
+// Định nghĩa không gian phần tử hữu hạn
+fespace Vh1(Sh,P1);
+fespace Vh2(Sh,[P2,P2]);
+fespace Wh2(Th,[P2,P2]);
+
+Vh2 [u,v],[w,s],[eu,ev];
+Vh1 gradient, energ;
+Wh2 [ui,vi],[eui,evi],[ui2,vi2],[eui2,evi2];
+
+
+// Giải phương trình biến dạng đàn hồi
+problem elasticity([u,v],[w,s]) =
+    int2d(Sh)(
+               2.*mu*(dx(u)*dx(w)+dy(v)*dy(s)+((dx(v)+dy(u))*(dx(s)+dy(w)))/2.)
+              +lambda*(dx(u)+dy(v))*(dx(w)+dy(s))
+	)
+    -int1d(Sh,neumann)(gx*w+gy*s)	           
+    +on(dirichlet,u=0,v=0)
+;
+
+
+// Phương trình mở rộng
+problem extension([eu,ev],[w,s]) =
+    int2d(Sh)(
+	dx(eu)*dx(w)+dy(eu)*dy(w)+dx(ev)*dx(s)+dy(ev)*dy(s)+eu*w+ev*s
+	)
+     -int1d(Sh,free) ((w*N.x+s*N.y)*(2*mu*(dx(u)^2+dy(v)^2+((dx(v)+dy(u))^2)/2.)
+              +lambda*(dx(u)+dy(v))^2 - muv)*cut)
+	+on(dirichlet,neumann,eu=0,ev=0)	           
+    ;
+
+// Thể tích mong muốn
+//volume0=int1d(Sh)(x*N.x+y*N.y)/2;
+volume0 = 100;
+cout <<"Initial volume = "<<volume0 <<endl;
+
+// Khởi tạo các giá trị ban đầu
+int iter;
+// Giải phương trình đàn hồi
+elasticity;
+// Computation of the shape gradient (for the compliance)
+energ=2*mu*(dx(u)^2+dy(v)^2+((dx(v)+dy(u))^2)/2.)+lambda*(dx(u)+dy(v))^2;
+
+// Evaluation of the Lagrange multiplier associated to the volume constraint
+muv=int1d(Sh,free)(energ)/int1d(Sh,free)(1.);
+//muv=0.08;
+gradient=(energ-muv)*cut;
+
+// Initial compliance 
+real compliance0=int1d(Sh,neumann)(gx*u+gy*v);
+
+// Adapting the fine mesh
+Sh=adaptmesh (Sh,u,v,err=errelas);
+
+// Initialization of the descent step
+pasef=pasinit;
+
+// We keep in memory the current mesh
+mesh Thprec=Th;
+
+plot(Sh,energ);
+
+// Tối ưu
+for(iter =1; iter < niter;iter+=1){
+	cout <<"Iteration " <<iter <<" -------------------------------------------" <<endl;
+	// Giải phương trình đàn hồi
+	elasticity;
+	// Computing the compliance
+	compliance=int1d(Sh,neumann)(gx*u+gy*v);
+	cout<<"Compliance = "<<compliance<<endl;
+
+	// The elastic displacement, computed on the fine mesh Sh, is 
+	// interpolated on the coarse mesh Th, defining the geometry.
+	[ui,vi]=[u,v];
+
+	// Computing the volume
+	volume=int1d(Sh)(x*N.x+y*N.y)/2;
+	cout <<"Volume = "<<volume <<endl;
+	
+	energ=  2*mu*(dx(u)^2+dy(v)^2+((dx(v)+dy(u))^2)/2.)+lambda*(dx(u)+dy(v))^2;
+	gradient=energ*cut;
+
+	// Refreshing the Lagrange multiplier associated to the volume constraint
+	muv=0.5*muv+0.5*int1d(Sh,free)(gradient)/int1d(Sh,free)(cut)+pasmu*(volume-volume0)/volume0;
+	//muv=muv+0.1*(volume-volume0)/volume0; //not very effective...
+	cout << "Lagrange multiplier = " << muv << endl ;
+
+	gradient=gradient-muv*cut;
+
+	plot(Sh,energ,fill=0,value=1);
+	savemesh(Sh,save+iter+".msh");
+	ofstream file(save+iter+".bb");
+		file << energ[].n << " \n";
+		int j;
+		for (j=0;j<energ[].n ; j++)  
+		file << energ[][j] << endl;
+	// Extension of the shape gradient inside the shape
+	extension;
+	//pasef = 0.02;
+	
+	// Mở rộng
+	[eui,evi]=[eu,ev];
+
+	// On calcule la norm (au carré) du gradient de forme
+	norm=int2d(Th)(dx(eui)^2+dx(evi)^2+dy(eui)^2+dy(evi)^2+eui^2+evi^2);
+	//grad<<sqrt(norm)<<endl;
+	// Comparison of the shape gradient with the previous one 
+	product=int2d(Th)(dx(eui)*dx(eui2)+dx(evi)*dx(evi2)+dy(eui)*dy(eui2)+dy(evi)*dy(evi2)+eui*eui2+evi*evi2);
+
+	/////////////////////////////////
+	// Refreshing the descent step //
+	/////////////////////////////////
+	// If the current shape gradient is in the same direction as the previous one
+	// (product>0), then we increase the descent step. If not (product<0), we step 
+	// back and we decrease the descent step (thus avoidng oscillations). 
+
+	if ((product<0)&(!back)){
+		pasef=pasef*norm/(norm-product)/4.;
+     	cout<<"******* Descent step too large: step back !!! *******"<<endl;
+     	Th=Thprec;
+     	back=true;
+	}
+	else{
+		back=false;
+	}
+
+	if ((product>0)&(product<(norm/2.))){
+		pasef=pasef*2*norm/(2*norm-product);
+     	cout<<"We increase the descent step"<<endl;
+	}
+
+	if (product>(norm/2.)){
+		pasef=pasef*4./3.;
+     	cout<<"We increase the descent step"<<endl;
+	}
+
+	// We keep in memory the current mesh
+	Thprec=Th;
+
+	//////////////////////////////////////////////////////
+	// We move the coarse mesh Th defining the geometry //
+	//         (only if we do not step back)            //
+	//////////////////////////////////////////////////////
+	// If triangles are inverted when moving the mesh, 
+	// the descent step is reduced. 
+
+	if (!back){
+		real aa,minaire=checkmovemesh (Th,[x,y])/100.;
+		while (minaire > (aa=checkmovemesh(Th,[x+pasef*eui,y+pasef*evi])) ){
+  			cout << "******* Problem of inverted triangle: the descent step is reduced, " << minaire << " > " << aa<<" *******"<< endl;
+  			pasef= pasef/2;
+  		}
+		Th = movemesh (Th,[x+pasef*eui,y+pasef*evi]);
+
+		cout<<"Effective descent step = "<<pasef<<endl;
+		// The elastic displacement and the shape gradient are interpolated
+		// on the deformed shape.
+		[ui2,vi2]=[0,0];
+		[eui2,evi2]=[0,0];
+		ui2[]=ui[]; vi2[]=vi[];
+		eui2[]=eui[];evi2[]=evi[];
+	}
+	// The mesh is refined/adapted before solving the elasticity system. 
+	Sh=adaptmesh(Th,[ui2,vi2],[eui2,evi2],err=errelas);
+	// The mesh Th is adapted to be coarse and uniform as much as possible.
+	Th=adaptmesh(Sh,5,0,5,IsMetric=1,ratio=0,omega=200,splitpbedge=1,hmin=0.05,abserror=1);
+}
+plot(Sh);
+elasticity;
+plot([u,v]);
+Th = movemesh (Sh,[x+2*u,y+2*v]);
+plot(Th);
